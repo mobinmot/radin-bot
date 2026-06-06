@@ -5,12 +5,14 @@ import json
 import re
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram import Bot
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.ext import Application, CallbackQueryHandler, ContextTypes
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+ADMIN_CHAT_ID = 5870651461
 
 TOPICS = [
     "مالیات بر ارزش افزوده",
@@ -21,6 +23,8 @@ TOPICS = [
     "بخشنامه‌های جدید سازمان امور مالیاتی",
     "حسابداری مالیاتی",
 ]
+
+pending_posts = {}
 
 async def fetch_tax_news() -> str:
     try:
@@ -49,27 +53,77 @@ async def generate_tax_content(topic: str, raw_news: str) -> dict:
 def format_message(content: dict) -> str:
     return f"{content['title']}\n\n{content['body']}\n\n💡 *نکته کلیدی:*\n{content['tip']}\n\n━━━━━━━━━━━━━━━\n📎 منبع: سازمان امور مالیاتی ایران\n{content['hashtags']}\n📌 کانال رادین | مشاوره مالیاتی"
 
-async def send_daily_content():
-    bot = Bot(token=TELEGRAM_TOKEN)
+async def send_preview(bot: Bot):
     topic = TOPICS[datetime.now().timetuple().tm_yday % len(TOPICS)]
-    print(f"[{datetime.now()}] موضوع: {topic}")
     try:
         raw_news = await fetch_tax_news()
         content = await generate_tax_content(topic, raw_news)
-        await bot.send_message(chat_id=CHANNEL_ID, text=format_message(content), parse_mode=ParseMode.MARKDOWN)
-        print(f"✅ ارسال موفق")
+        message = format_message(content)
+        post_id = str(datetime.now().timestamp())
+        pending_posts[post_id] = message
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"approve_{post_id}"),
+                InlineKeyboardButton("🔄 تولید مجدد", callback_data=f"regenerate_{post_id}"),
+            ],
+            [InlineKeyboardButton("❌ رد کردن", callback_data=f"reject_{post_id}")]
+        ])
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"📋 *پیش‌نویس پست امروز:*\n\n{message}", parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
     except Exception as e:
         print(f"❌ خطا: {e}")
 
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data.startswith("approve_"):
+        post_id = data.replace("approve_", "")
+        message = pending_posts.get(post_id)
+        if message:
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=message, parse_mode=ParseMode.MARKDOWN)
+            await query.edit_message_text("✅ پست در کانال منتشر شد!")
+            del pending_posts[post_id]
+    elif data.startswith("reject_"):
+        post_id = data.replace("reject_", "")
+        if post_id in pending_posts:
+            del pending_posts[post_id]
+        await query.edit_message_text("❌ پست رد شد.")
+    elif data.startswith("regenerate_"):
+        await query.edit_message_text("🔄 در حال تولید پست جدید...")
+        topic = TOPICS[datetime.now().timetuple().tm_yday % len(TOPICS)]
+        try:
+            raw_news = await fetch_tax_news()
+            content = await generate_tax_content(topic, raw_news)
+            message = format_message(content)
+            post_id = str(datetime.now().timestamp())
+            pending_posts[post_id] = message
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"approve_{post_id}"),
+                    InlineKeyboardButton("🔄 تولید مجدد", callback_data=f"regenerate_{post_id}"),
+                ],
+                [InlineKeyboardButton("❌ رد کردن", callback_data=f"reject_{post_id}")]
+            ])
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"📋 *پیش‌نویس جدید:*\n\n{message}", parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+        except Exception as e:
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"❌ خطا: {e}")
+
 async def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CallbackQueryHandler(button_handler))
     scheduler = AsyncIOScheduler(timezone="Asia/Tehran")
-    scheduler.add_job(send_daily_content, "cron", hour=8, minute=30)
+    scheduler.add_job(send_preview, "cron", hour=8, minute=0, args=[app.bot])
     scheduler.start()
-    print("✅ ربات رادین فعال — ساعت ۸:۳۰ صبح")
+    print("✅ ربات رادین فعال — پیش‌نویس ساعت ۸:۰۰ صبح")
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
     try:
         await asyncio.Event().wait()
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
+        await app.updater.stop()
+        await app.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
