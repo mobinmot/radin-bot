@@ -69,8 +69,10 @@ async def send_preview(bot: Bot):
             [InlineKeyboardButton("❌ رد کردن", callback_data=f"reject_{post_id}")]
         ])
         await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"📋 *پیش‌نویس پست امروز:*\n\n{message}", parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+        print(f"✅ پیش‌نویس ارسال شد")
     except Exception as e:
         print(f"❌ خطا: {e}")
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"❌ خطا در تولید محتوا: {e}")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -114,10 +116,12 @@ async def main():
     scheduler = AsyncIOScheduler(timezone="Asia/Tehran")
     scheduler.add_job(send_preview, "cron", hour=8, minute=0, args=[app.bot])
     scheduler.start()
-    print("✅ ربات رادین فعال — پیش‌نویس ساعت ۸:۰۰ صبح")
+    print("✅ ربات رادین فعال شد")
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+    # پیام تست موقع شروع
+    await send_preview(app.bot)
     try:
         await asyncio.Event().wait()
     except (KeyboardInterrupt, SystemExit):
