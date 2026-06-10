@@ -11,7 +11,7 @@ from telegram.ext import Application, CallbackQueryHandler, ContextTypes
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
 ADMIN_CHAT_ID = 5870651461
 
 TOPICS = [
@@ -33,21 +33,24 @@ async def fetch_tax_news() -> str:
             if resp.status_code == 200:
                 clean = re.sub(r'<[^>]+>', ' ', resp.text)
                 clean = re.sub(r'\s+', ' ', clean).strip()
-                return clean[:3000]
+                return clean[:2000]
     except Exception as e:
         print(f"خطا: {e}")
     return ""
 
 async def generate_tax_content(topic: str, raw_news: str) -> dict:
     today = datetime.now().strftime("%Y/%m/%d")
-    ctx = f"اطلاعات از سازمان امور مالیاتی:\n{raw_news[:1500]}\n\nبا استفاده از این اطلاعات،" if raw_news else "بر اساس قوانین مالیاتی ایران،"
+    ctx = f"اطلاعات از سازمان امور مالیاتی:\n{raw_news[:1000]}\n\nبا استفاده از این اطلاعات،" if raw_news else "بر اساس قوانین مالیاتی ایران،"
     prompt = f"""امروز {today} است. {ctx} درباره «{topic}» پست تلگرامی فارسی بنویس.
-فقط JSON خالص:
+فقط JSON خالص بدون توضیح:
 {{"title":"عنوان با ایموجی","body":"متن ۸۰ تا ۱۰۰ کلمه","tip":"نکته کلیدی","hashtags":"#مالیات #رادین #حسابداری"}}"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(url, json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"temperature":0.7,"maxOutputTokens":1000}})
-        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        resp = await client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "meta-llama/llama-3.1-8b-instruct:free", "messages": [{"role": "user", "content": prompt}]}
+        )
+        text = resp.json()["choices"][0]["message"]["content"].strip()
         return json.loads(text.replace("```json","").replace("```","").strip())
 
 def format_message(content: dict) -> str:
@@ -62,17 +65,15 @@ async def send_preview(bot: Bot):
         post_id = str(datetime.now().timestamp())
         pending_posts[post_id] = message
         keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"approve_{post_id}"),
-                InlineKeyboardButton("🔄 تولید مجدد", callback_data=f"regenerate_{post_id}"),
-            ],
+            [InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"approve_{post_id}"),
+             InlineKeyboardButton("🔄 تولید مجدد", callback_data=f"regenerate_{post_id}")],
             [InlineKeyboardButton("❌ رد کردن", callback_data=f"reject_{post_id}")]
         ])
         await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"📋 *پیش‌نویس پست امروز:*\n\n{message}", parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
-        print(f"✅ پیش‌نویس ارسال شد")
+        print("✅ پیش‌نویس ارسال شد")
     except Exception as e:
         print(f"❌ خطا: {e}")
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"❌ خطا در تولید محتوا: {e}")
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"❌ خطا: {e}")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -100,10 +101,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             post_id = str(datetime.now().timestamp())
             pending_posts[post_id] = message
             keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"approve_{post_id}"),
-                    InlineKeyboardButton("🔄 تولید مجدد", callback_data=f"regenerate_{post_id}"),
-                ],
+                [InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"approve_{post_id}"),
+                 InlineKeyboardButton("🔄 تولید مجدد", callback_data=f"regenerate_{post_id}")],
                 [InlineKeyboardButton("❌ رد کردن", callback_data=f"reject_{post_id}")]
             ])
             await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"📋 *پیش‌نویس جدید:*\n\n{message}", parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
@@ -120,7 +119,6 @@ async def main():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-    # پیام تست موقع شروع
     await send_preview(app.bot)
     try:
         await asyncio.Event().wait()
